@@ -1,0 +1,1533 @@
+﻿local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+Library.ForceCheckbox = false
+Library.ShowToggleFrameInKeybinds = true
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local CollectionService = game:GetService("CollectionService")
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+
+local getgenv = getgenv or function() return _G end
+
+if getgenv().BluzHub then
+    if getgenv().BluzHub.Connections then
+        for _, conn in pairs(getgenv().BluzHub.Connections) do
+            pcall(function() conn:Disconnect() end)
+        end
+    end
+    if getgenv().BluzHub.Tasks then
+        for _, taskObj in pairs(getgenv().BluzHub.Tasks) do
+            pcall(function() task.cancel(taskObj) end)
+        end
+    end
+    if getgenv().BluzHub.Window then
+        pcall(function() getgenv().BluzHub.Window:Destroy() end)
+    end
+    getgenv().BluzHub = nil
+    task.wait(0.2)
+end
+
+getgenv().BluzHub = {
+    Connections = {},
+    Tasks = {},
+    Window = nil,
+    Tabs = {},
+    Farm = { Enabled = false, Running = false, Loop = nil, SpecificEggNames = {}, SelectedRarities = {}, SelectedAreas = {}, AreasNameById = {}, EggLookup = {}, FailCounts = {}, LastTargetUid = nil },
+    Sell = { SelectedEggCategories = {}, SelectedPetCategories = {}, AutoEggsRunning = false, AutoEggsLoop = nil, AutoPetsRunning = false, AutoPetsLoop = nil, Deps = {} },
+    Shop = { AutoTrailRunning = false, AutoTrailLoop = nil, AutoBikeRunning = false, AutoBikeLoop = nil, AutoTreadmillRunning = false, AutoTreadmillLoop = nil, AutoPlotRunning = false, AutoPlotLoop = nil },
+    Plot = { HatchSelectedEggs = {"All"}, PlaceSelectedEggs = {"Best"}, AutoHatchRunning = false, AutoHatchLoop = nil, AutoPlaceRunning = false, AutoPlaceLoop = nil, AutoTreadmillRunning = false, AutoTreadmillLoop = nil, AutoClaimRunning = false, AutoClaimLoop = nil, AutoPlaceBestPetsRunning = false, AutoPlaceBestPetsLoop = nil },
+}
+
+local BluzHub = getgenv().BluzHub
+
+local function addConnection(conn)
+    table.insert(BluzHub.Connections, conn)
+end
+
+local function addTask(taskObj)
+    table.insert(BluzHub.Tasks, taskObj)
+end
+
+local function notify(title, content, duration)
+    Library:Notify({ Title = title, Content = content, Duration = duration or 4 })
+end
+
+local gameName = "Unknown Game"
+pcall(function()
+    local info = MarketplaceService:GetProductInfo(game.PlaceId)
+    gameName = info.Name or "Unknown Game"
+end)
+
+BluzHub.Window = Library:CreateWindow({
+    Title = "BluzHub - " .. gameName,
+    Footer = "v1.0 | discord.gg/JBAvpPx4eN",
+    Icon = "chess-queen",
+    NotifySide = "Right",
+    ShowCustomCursor = false,
+})
+
+local Tabs = {
+    Main = BluzHub.Window:AddTab("Main", "home"),
+    Farm = BluzHub.Window:AddTab("Farm", "tractor"),
+    Sell = BluzHub.Window:AddTab("Sell", "coins"),
+    Shop = BluzHub.Window:AddTab("Shop", "shopping-cart"),
+    Plot = BluzHub.Window:AddTab("Plot", "map"),
+    Visuals = BluzHub.Window:AddTab("Visuals", "eye"),
+    Misc = BluzHub.Window:AddTab("Misc", "settings"),
+    ["UI Settings"] = BluzHub.Window:AddTab("UI Settings", "wrench"),
+}
+BluzHub.Tabs = Tabs
+
+local function getSaveModule()
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local client = lib and lib:FindFirstChild("Client")
+    local save = client and client:FindFirstChild("Save")
+    if not save or not save:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, save)
+    if ok and type(mod) == "table" and type(mod.Get) == "function" then return mod end
+    return nil
+end
+
+local function getNetworkModule()
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local client = lib and lib:FindFirstChild("Client")
+    local network = client and client:FindFirstChild("Network")
+    if not network or not network:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, network)
+    if ok and type(mod) == "table" then return mod end
+    return nil
+end
+
+local function getAssets()
+    local dir = game:GetService("ReplicatedStorage"):FindFirstChild("Directory")
+    local assets = dir and dir:FindFirstChild("Assets")
+    if not assets or not assets:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, assets)
+    if ok and type(mod) == "table" and type(mod.Directory) == "table" then return mod end
+    return nil
+end
+
+local function getEggCmds()
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local client = lib and lib:FindFirstChild("Client")
+    local cmds = client and client:FindFirstChild("EggCmds")
+    if not cmds or not cmds:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, cmds)
+    if ok and type(mod) == "table" then return mod end
+    return nil
+end
+
+local function getPlotCmds()
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local client = lib and lib:FindFirstChild("Client")
+    local cmds = client and client:FindFirstChild("PlotCmds")
+    if not cmds or not cmds:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, cmds)
+    if ok and type(mod) == "table" then return mod end
+    return nil
+end
+
+local function getRarityName(category, assets)
+    local a = assets or getAssets()
+    if not a or not a.Directory[category] then return "Unknown", 0 end
+    local r = a.Directory[category].Rarity
+    if type(r) ~= "table" then return "Unknown", 0 end
+    return r.DisplayName or r._id or r.Name or "Unknown", tonumber(r.RarityNumber) or 0
+end
+
+local function getEggsList()
+    local a = getAssets()
+    if not a then return {} end
+    local eggsFolder = game:GetService("ReplicatedStorage"):FindFirstChild("Assets")
+    local models = eggsFolder and eggsFolder:FindFirstChild("Models")
+    local eggModels = models and models:FindFirstChild("Eggs")
+    local list = {}
+    for name, data in pairs(a.Directory) do
+        if type(name) == "string" and type(data) == "table" and type(data.Rarity) == "table" then
+            local valid = true
+            if eggModels then valid = eggModels:FindFirstChild(name) ~= nil end
+            if valid then
+                table.insert(list, { Name = name, Rarity = data.Rarity.DisplayName or data.Rarity._id or data.Rarity.Name or "Unknown", RarityNum = tonumber(data.Rarity.RarityNumber) or 0 })
+            end
+        end
+    end
+    table.sort(list, function(x, y)
+        if x.RarityNum ~= y.RarityNum then return x.RarityNum > y.RarityNum end
+        return x.Name < y.Name
+    end)
+    local names = {}
+    local lookup = {}
+    for _, v in ipairs(list) do
+        local display = "[" .. v.Rarity .. "] " .. v.Name
+        table.insert(names, display)
+        lookup[display] = v.Name
+    end
+    BluzHub.Farm.EggLookup = lookup
+    return names
+end
+
+local function getRaritiesList()
+    local a = getAssets()
+    if not a then return {} end
+    local seen = {}
+    for _, data in pairs(a.Directory) do
+        if type(data) == "table" and type(data.Rarity) == "table" then
+            local num = tonumber(data.Rarity.RarityNumber) or 0
+            local name = data.Rarity.DisplayName or data.Rarity._id or data.Rarity.Name
+            if type(name) == "string" and name ~= "" then
+                if not seen[name] or num > seen[name] then seen[name] = num end
+            end
+        end
+    end
+    local arr = {}
+    for name, num in pairs(seen) do table.insert(arr, { Name = name, Num = num }) end
+    table.sort(arr, function(x, y)
+        if x.Num ~= y.Num then return x.Num > y.Num end
+        return x.Name < y.Name
+    end)
+    local out = {}
+    for _, v in ipairs(arr) do table.insert(out, v.Name) end
+    return out
+end
+
+local function getAreasList()
+    local dir = game:GetService("ReplicatedStorage"):FindFirstChild("Directory")
+    local areas = dir and dir:FindFirstChild("Areas")
+    local a = getAssets()
+    local list = {}
+    local seen = {}
+    if areas and areas:IsA("ModuleScript") then
+        local ok, mod = pcall(require, areas)
+        if ok and type(mod) == "table" and type(mod.Directory) == "table" then
+            for id, data in pairs(mod.Directory) do
+                if type(id) == "string" and type(data) == "table" then
+                    local maxRarity = 0
+                    if type(data.DropTable) == "table" then
+                        for _, drop in ipairs(data.DropTable) do
+                            if type(drop) == "table" and drop[1] and a and a.Directory[drop[1]] then
+                                local r = a.Directory[drop[1]].Rarity
+                                if type(r) == "table" then
+                                    local num = tonumber(r.RarityNumber) or 0
+                                    if num > maxRarity then maxRarity = num end
+                                end
+                            end
+                        end
+                    end
+                    table.insert(list, { Id = id, Name = data.DisplayName or id, RarityNum = maxRarity })
+                    seen[id] = true
+                end
+            end
+        end
+    end
+    local cmds = getEggCmds()
+    if cmds then
+        local ok, snap = pcall(function() return cmds.GetAreaEggSnapshot() end)
+        if ok and type(snap) == "table" and type(snap.Records) == "table" then
+            for _, rec in ipairs(snap.Records) do
+                if type(rec.AreaId) == "string" and not seen[rec.AreaId] then
+                    seen[rec.AreaId] = true
+                    table.insert(list, { Id = rec.AreaId, Name = rec.AreaId, RarityNum = 0 })
+                end
+            end
+        end
+    end
+    table.sort(list, function(x, y)
+        if x.RarityNum ~= y.RarityNum then return x.RarityNum > y.RarityNum end
+        return x.Name < y.Name
+    end)
+    local names = {}
+    local lookup = {}
+    for _, v in ipairs(list) do
+        lookup[v.Id] = v.Name
+        table.insert(names, v.Name)
+    end
+    BluzHub.Farm.AreasNameById = lookup
+    return names
+end
+
+local function isCarrying()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("Tool") and child:GetAttribute("AreaEggCarryVisual") == true then return true end
+    end
+    return false
+end
+
+local function teleport(pos)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local look = hrp.CFrame.LookVector
+    return pcall(function()
+        hrp.CFrame = CFrame.new(pos, pos + look)
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+
+local function findEggModel(uid)
+    if not uid then return nil end
+    local obj = workspace:FindFirstChild(uid)
+    if obj and obj:IsA("Model") then return obj end
+    local slots = workspace:FindFirstChild("AreaEggSlotsClient")
+    if slots then
+        local obj2 = slots:FindFirstChild(uid)
+        if obj2 and obj2:IsA("Model") then return obj2 end
+    end
+    return nil
+end
+
+local function findBestTarget()
+    BluzHub.Farm.FailCounts = BluzHub.Farm.FailCounts or {}
+    local cmds = getEggCmds()
+    if not cmds then return nil end
+    local ok, snap = pcall(function() return cmds.GetAreaEggSnapshot() end)
+    if not ok or type(snap) ~= "table" or type(snap.Records) ~= "table" then return nil end
+    local assets = getAssets()
+    local candidates = {}
+    for _, rec in ipairs(snap.Records) do
+        if rec.Uid and rec.AssetCategory and rec.CarrierUserId == nil then
+            if rec.State == "Slot" or rec.State == "Dropped" then
+                local _, rarityNum = getRarityName(rec.AssetCategory, assets)
+                table.insert(candidates, { Record = rec, RarityNum = rarityNum, Uid = rec.Uid })
+            end
+        end
+    end
+    if #candidates == 0 then return nil end
+    local filtered = {}
+    for _, v in ipairs(candidates) do
+        if (BluzHub.Farm.FailCounts[v.Uid] or 0) < 2 then table.insert(filtered, v) end
+    end
+    if #filtered == 0 then
+        BluzHub.Farm.FailCounts = {}
+        filtered = candidates
+    end
+    local function bestOf(arr)
+        if #arr == 0 then return nil end
+        local best = arr[1]
+        for i = 2, #arr do
+            local v = arr[i]
+            if v.RarityNum > best.RarityNum or (v.RarityNum == best.RarityNum and tostring(v.Uid) < tostring(best.Uid)) then best = v end
+        end
+        return best
+    end
+    if #BluzHub.Farm.SpecificEggNames > 0 then
+        local set = {}
+        for _, n in ipairs(BluzHub.Farm.SpecificEggNames) do if type(n) == "string" then set[n] = true end end
+        local match = {}
+        for _, v in ipairs(filtered) do if set[v.Record.AssetCategory] then table.insert(match, v) end end
+        if #match > 0 then return bestOf(match) end
+    end
+    if #BluzHub.Farm.SelectedRarities > 0 then
+        local set = {}
+        for _, r in ipairs(BluzHub.Farm.SelectedRarities) do if type(r) == "string" then set[r] = true end end
+        local match = {}
+        for _, v in ipairs(filtered) do if set[getRarityName(v.Record.AssetCategory, assets)] then table.insert(match, v) end end
+        if #match > 0 then return bestOf(match) end
+    end
+    if #BluzHub.Farm.SelectedAreas > 0 then
+        local set = {}
+        for _, a in ipairs(BluzHub.Farm.SelectedAreas) do if type(a) == "string" then set[a] = true end end
+        local match = {}
+        for _, v in ipairs(filtered) do
+            local areaName = BluzHub.Farm.AreasNameById[v.Record.AreaId] or v.Record.AreaId
+            if areaName and set[areaName] then table.insert(match, v) end
+        end
+        if #match > 0 then return bestOf(match) end
+    end
+    return nil
+end
+
+local function stealEgg(record)
+    if not record or not record.Uid then return false end
+    BluzHub.Farm.FailCounts = BluzHub.Farm.FailCounts or {}
+    local cmds = getEggCmds()
+    if not cmds then return false end
+    local ok, snap = pcall(function() return cmds.GetAreaEggSnapshot() end)
+    if not ok or type(snap) ~= "table" then return false end
+    local pos
+    local found = false
+    for _, rec in ipairs(snap.Records) do
+        if rec.Uid == record.Uid then
+            if rec.CarrierUserId == nil and (rec.State == "Slot" or rec.State == "Dropped") then
+                found = true
+                if rec.BottomCFrame then
+                    local ok2, p = pcall(function() return rec.BottomCFrame.Position end)
+                    if ok2 and p then pos = p end
+                end
+            end
+            break
+        end
+    end
+    if not found then BluzHub.Farm.FailCounts[record.Uid] = 999; return false end
+    if not pos then
+        local model = findEggModel(record.Uid)
+        if model then
+            local ok2, p = pcall(function() return model:GetPivot().Position end)
+            if ok2 and p then pos = p end
+        end
+    end
+    if not pos then return false end
+    BluzHub.Farm.LastTargetUid = record.Uid
+    teleport(pos + Vector3.new(0, 2, 0))
+    pcall(function() cmds.RequestCarryAreaEgg(record.Uid) end)
+    local model = findEggModel(record.Uid)
+    if model and fireproximityprompt then
+        local prompt = model:FindFirstChild("CarryAreaEgg", true)
+        if prompt and prompt:IsA("ProximityPrompt") then pcall(fireproximityprompt, prompt) end
+    end
+    local timeout = tick() + 1
+    while tick() < timeout do
+        if isCarrying() then BluzHub.Farm.FailCounts[record.Uid] = nil; return true end
+        task.wait(0.03)
+    end
+    teleport(pos + Vector3.new(0, 2, 0))
+    pcall(function() cmds.RequestCarryAreaEgg(record.Uid) end)
+    if model and fireproximityprompt then
+        local prompt = model:FindFirstChild("CarryAreaEgg", true)
+        if prompt and prompt:IsA("ProximityPrompt") then pcall(fireproximityprompt, prompt) end
+    end
+    local timeout2 = tick() + 0.5
+    while tick() < timeout2 do
+        if isCarrying() then BluzHub.Farm.FailCounts[record.Uid] = nil; return true end
+        task.wait(0.03)
+    end
+    if not isCarrying() then BluzHub.Farm.FailCounts[record.Uid] = (BluzHub.Farm.FailCounts[record.Uid] or 0) + 1 end
+    return isCarrying()
+end
+
+local function returnToBase()
+    local plotCmds = getPlotCmds()
+    if not plotCmds then return false end
+    local ok, data = pcall(function() return plotCmds.GetPlotData() end)
+    if not ok or type(data) ~= "table" then return false end
+    local pos
+    if data.PetArea and data.PetArea.Position then pos = data.PetArea.Position
+    elseif data.CenterPoint and data.CenterPoint.CFrame then pos = data.CenterPoint.CFrame.Position
+    elseif data.CenterPoint and data.CenterPoint.Position then pos = data.CenterPoint.Position end
+    if not pos then return false end
+    teleport(pos + Vector3.new(0, 5, 0))
+    task.wait(0.03)
+    if isCarrying() then teleport(pos + Vector3.new(0, 5, 0)) end
+    return true
+end
+
+local function waitClaim()
+    local timeout = tick() + 2.5
+    while tick() < timeout do
+        if not isCarrying() then return true end
+        task.wait(0.03)
+    end
+    return not isCarrying()
+end
+
+local function farmRunOnce()
+    if not BluzHub.Farm.Enabled then return false, "disabled" end
+    if isCarrying() then returnToBase(); waitClaim(); return true, "claimed" end
+    local target = findBestTarget()
+    if not target then return false, "no target" end
+    if stealEgg(target.Record) then returnToBase(); waitClaim(); return true, "stolen" end
+    return false, "steal failed"
+end
+
+local function startAutoFarm()
+    if BluzHub.Farm.Running then return end
+    BluzHub.Farm.FailCounts = {}
+    BluzHub.Farm.Enabled = true
+    BluzHub.Farm.Running = true
+    BluzHub.Farm.Loop = task.spawn(function()
+        while BluzHub.Farm.Enabled do
+            local ok, res = pcall(farmRunOnce)
+            if not ok then task.wait(0.2) elseif res == false then task.wait(0.1) end
+            task.wait(0.03)
+        end
+        BluzHub.Farm.Running = false
+    end)
+    addTask(BluzHub.Farm.Loop)
+end
+
+local function stopAutoFarm()
+    BluzHub.Farm.Enabled = false
+    BluzHub.Farm.Running = false
+    BluzHub.Farm.FailCounts = {}
+    BluzHub.Farm.LastTargetUid = nil
+    if BluzHub.Farm.Loop then task.cancel(BluzHub.Farm.Loop); BluzHub.Farm.Loop = nil end
+end
+
+local function sellLoadDeps()
+    local deps = BluzHub.Sell.Deps
+    if deps.Save and deps.Network and deps.EggItemUtil and deps.AssetItemSerialization and deps.GetPriceValueForItem then return deps end
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local client = lib and lib:FindFirstChild("Client")
+    local util = lib and lib:FindFirstChild("Util")
+    if not deps.Save and client then
+        local save = client:FindFirstChild("Save")
+        if save and save:IsA("ModuleScript") then
+            local ok, mod = pcall(require, save)
+            if ok and type(mod) == "table" and type(mod.Get) == "function" then deps.Save = mod end
+        end
+    end
+    if not deps.Network and client then
+        local network = client:FindFirstChild("Network")
+        if network and network:IsA("ModuleScript") then
+            local ok, mod = pcall(require, network)
+            if ok and type(mod) == "table" then deps.Network = mod end
+        end
+    end
+    if not deps.EggItemUtil and util then
+        local eggItem = util:FindFirstChild("EggItemUtil")
+        if eggItem and eggItem:IsA("ModuleScript") then
+            local ok, mod = pcall(require, eggItem)
+            if ok and type(mod) == "table" then deps.EggItemUtil = mod end
+        end
+    end
+    if not deps.AssetItemSerialization and util then
+        local serial = util:FindFirstChild("AssetItemSerialization")
+        if serial and serial:IsA("ModuleScript") then
+            local ok, mod = pcall(require, serial)
+            if ok and type(mod) == "table" then deps.AssetItemSerialization = mod end
+        end
+    end
+    if not deps.GetPriceValueForItem and util then
+        local price = util:FindFirstChild("GetPriceValueForItem")
+        if price and price:IsA("ModuleScript") then
+            local ok, mod = pcall(require, price)
+            if ok and type(mod) == "function" then deps.GetPriceValueForItem = mod end
+        end
+    end
+    return deps
+end
+
+local function getSellableEggs()
+    local deps = sellLoadDeps()
+    if not deps.Save or not deps.EggItemUtil then return {} end
+    local ok, save = pcall(function() return deps.Save.Get() end)
+    if not ok or type(save) ~= "table" then return {} end
+    local inventory = save.EggInventory or {}
+    local assets = getAssets()
+    local list = {}
+    for uid, item in pairs(inventory) do
+        if type(item) == "table" and item.Placement == nil then
+            local ok2, egg = pcall(function() return deps.EggItemUtil.DeserializeSavedEgg(item) end)
+            if ok2 and type(egg) == "table" then
+                local category = egg.AssetCategory
+                local ok3, price = pcall(function() return deps.EggItemUtil.GetSellPrice(egg) end)
+                local rarityName, rarityNum = "Unknown", 0
+                if assets and assets.Directory[category] then
+                    local r = assets.Directory[category].Rarity
+                    if type(r) == "table" then rarityName = r.DisplayName or r._id or r.Name or "Unknown"; rarityNum = tonumber(r.RarityNumber) or 0 end
+                end
+                table.insert(list, { uid = uid, category = category, price = ok3 and math.floor(price) or 0, rarity = rarityName, rarityNum = rarityNum })
+            end
+        end
+    end
+    return list
+end
+
+local function getSellablePets()
+    local deps = sellLoadDeps()
+    if not deps.Save or not deps.AssetItemSerialization or not deps.GetPriceValueForItem then return {} end
+    local ok, save = pcall(function() return deps.Save.Get() end)
+    if not ok or type(save) ~= "table" then return {} end
+    local inventory = save.Inventory or {}
+    local equipped = save.EquippedAssets or {}
+    local favorites = save.FavoriteAssets or {}
+    local assets = getAssets()
+    local vipMult = LocalPlayer:GetAttribute("VIP") and 2 or 1
+    local list = {}
+    for uid, item in pairs(inventory) do
+        if type(item) == "table" then
+            if not table.find(equipped, uid) and not favorites[uid] then
+                local ok2, pet = pcall(function() return deps.AssetItemSerialization.Deserialize(item) end)
+                if ok2 and type(pet) == "table" then
+                    if not pet.IsFavorite and not pet.InFuse then
+                        local category = pet.Category
+                        local ok3, price = pcall(function() return deps.GetPriceValueForItem(item) * 1.33 * vipMult end)
+                        local rarityName, rarityNum = "Unknown", 0
+                        if assets and assets.Directory[category] then
+                            local r = assets.Directory[category].Rarity
+                            if type(r) == "table" then rarityName = r.DisplayName or r._id or r.Name or "Unknown"; rarityNum = tonumber(r.RarityNumber) or 0 end
+                        end
+                        table.insert(list, { uid = uid, category = category, price = ok3 and math.floor(price) or 0, rarity = rarityName, rarityNum = rarityNum })
+                    end
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function getAllEggCategories()
+    local assets = getAssets()
+    if not assets then return {}, {} end
+    local list = {}
+    for name, data in pairs(assets.Directory) do
+        if type(name) == "string" and type(data) == "table" and data.Egg ~= nil and type(data.Rarity) == "table" then
+            table.insert(list, { name = name, rarity = data.Rarity.DisplayName or data.Rarity._id or data.Rarity.Name or "Unknown", rarityNum = tonumber(data.Rarity.RarityNumber) or 0 })
+        end
+    end
+    table.sort(list, function(x, y)
+        if x.rarityNum ~= y.rarityNum then return x.rarityNum > y.rarityNum end
+        return x.name < y.name
+    end)
+    local names = {}
+    local lookup = {}
+    for _, v in ipairs(list) do
+        local display = "[" .. v.rarity .. "] " .. v.name
+        table.insert(names, display)
+        lookup[display] = v.name
+    end
+    return names, lookup
+end
+
+local function getAllPetCategories()
+    local assets = getAssets()
+    if not assets then return {}, {} end
+    local list = {}
+    for name, data in pairs(assets.Directory) do
+        if type(name) == "string" and type(data) == "table" and data.Egg == nil and type(data.Rarity) == "table" then
+            if data.DisplayName ~= nil or data.Icon ~= nil then
+                table.insert(list, { name = name, rarity = data.Rarity.DisplayName or data.Rarity._id or data.Rarity.Name or "Unknown", rarityNum = tonumber(data.Rarity.RarityNumber) or 0 })
+            end
+        end
+    end
+    table.sort(list, function(x, y)
+        if x.rarityNum ~= y.rarityNum then return x.rarityNum > y.rarityNum end
+        return x.name < y.name
+    end)
+    local names = {}
+    local lookup = {}
+    for _, v in ipairs(list) do
+        local display = "[" .. v.rarity .. "] " .. v.name
+        table.insert(names, display)
+        lookup[display] = v.name
+    end
+    return names, lookup
+end
+
+local function filterByCategories(items, selected)
+    if not items or #items == 0 or not selected or #selected == 0 then return {} end
+    local set = {}
+    for _, v in ipairs(selected) do
+        if type(v) == "string" then
+            local clean = v:match("^%[[^%]]+%]%s*(.+)$")
+            if clean and clean ~= "" then set[clean] = true end
+        end
+    end
+    local out = {}
+    for _, item in ipairs(items) do if set[item.category] then table.insert(out, item) end end
+    return out
+end
+
+local function sellItems(uids, mode)
+    if not uids or #uids == 0 then return false end
+    local deps = sellLoadDeps()
+    if not deps.Network then return false end
+    local network = deps.Network
+    if not network.NET_MAP or not network.NET_MAP.AssetInventory then return false end
+    local inv = network.NET_MAP.AssetInventory
+    if mode == "Pet" then
+        pcall(function() network.Fire(inv.SELL_ALL_ASSETS, uids) end)
+    else
+        for _, uid in ipairs(uids) do pcall(function() network.Fire(inv.SELL_ASSET, uid) end) end
+    end
+    return true
+end
+
+local function safeSell(uids, mode)
+    if not uids or #uids == 0 then return false end
+    return sellItems(uids, mode)
+end
+
+local function sellAllEggs()
+    local eggs = getSellableEggs()
+    if #eggs == 0 then return 0 end
+    local uids = {}
+    for _, v in ipairs(eggs) do table.insert(uids, v.uid) end
+    safeSell(uids, "Egg")
+    return #uids
+end
+
+local function sellAllPets()
+    local pets = getSellablePets()
+    if #pets == 0 then return 0 end
+    local uids = {}
+    for _, v in ipairs(pets) do table.insert(uids, v.uid) end
+    safeSell(uids, "Pet")
+    return #uids
+end
+
+local function sellSelectedEggs()
+    local selected = BluzHub.Sell.SelectedEggCategories
+    if not selected or #selected == 0 then return 0 end
+    local eggs = getSellableEggs()
+    local filtered = filterByCategories(eggs, selected)
+    if #filtered == 0 then return 0 end
+    local uids = {}
+    for _, v in ipairs(filtered) do table.insert(uids, v.uid) end
+    safeSell(uids, "Egg")
+    return #uids
+end
+
+local function sellSelectedPets()
+    local selected = BluzHub.Sell.SelectedPetCategories
+    if not selected or #selected == 0 then return 0 end
+    local pets = getSellablePets()
+    local filtered = filterByCategories(pets, selected)
+    if #filtered == 0 then return 0 end
+    local uids = {}
+    for _, v in ipairs(filtered) do table.insert(uids, v.uid) end
+    safeSell(uids, "Pet")
+    return #uids
+end
+
+local function sellStartAutoEggs()
+    if BluzHub.Sell.AutoEggsLoop then return end
+    BluzHub.Sell.AutoEggsRunning = true
+    BluzHub.Sell.AutoEggsLoop = task.spawn(function()
+        while BluzHub.Sell.AutoEggsRunning do
+            local selected = BluzHub.Sell.SelectedEggCategories
+            if selected and #selected > 0 then
+                local eggs = getSellableEggs()
+                local filtered = filterByCategories(eggs, selected)
+                if #filtered > 0 then
+                    local uids = {}
+                    for _, v in ipairs(filtered) do table.insert(uids, v.uid) end
+                    sellItems(uids, "Egg")
+                end
+            end
+            task.wait(1)
+        end
+        BluzHub.Sell.AutoEggsLoop = nil
+        BluzHub.Sell.AutoEggsRunning = false
+    end)
+    addTask(BluzHub.Sell.AutoEggsLoop)
+end
+
+local function sellStopAutoEggs()
+    BluzHub.Sell.AutoEggsRunning = false
+    if BluzHub.Sell.AutoEggsLoop then task.cancel(BluzHub.Sell.AutoEggsLoop); BluzHub.Sell.AutoEggsLoop = nil end
+end
+
+local function sellStartAutoPets()
+    if BluzHub.Sell.AutoPetsLoop then return end
+    BluzHub.Sell.AutoPetsRunning = true
+    BluzHub.Sell.AutoPetsLoop = task.spawn(function()
+        while BluzHub.Sell.AutoPetsRunning do
+            local selected = BluzHub.Sell.SelectedPetCategories
+            if selected and #selected > 0 then
+                local pets = getSellablePets()
+                local filtered = filterByCategories(pets, selected)
+                if #filtered > 0 then
+                    local uids = {}
+                    for _, v in ipairs(filtered) do table.insert(uids, v.uid) end
+                    sellItems(uids, "Pet")
+                end
+            end
+            task.wait(1)
+        end
+        BluzHub.Sell.AutoPetsLoop = nil
+        BluzHub.Sell.AutoPetsRunning = false
+    end)
+    addTask(BluzHub.Sell.AutoPetsLoop)
+end
+
+local function sellStopAutoPets()
+    BluzHub.Sell.AutoPetsRunning = false
+    if BluzHub.Sell.AutoPetsLoop then task.cancel(BluzHub.Sell.AutoPetsLoop); BluzHub.Sell.AutoPetsLoop = nil end
+end
+
+local function waitSaveLoaded()
+    local save = getSaveModule()
+    if not save then return false end
+    if type(save.IsLocalDataLoaded) == "function" then
+        local ok, loaded = pcall(function() return save.IsLocalDataLoaded() end)
+        if ok and not loaded then
+            if save.LoadedStats then pcall(function() save.LoadedStats:Wait() end) end
+        end
+    end
+    return true
+end
+
+local function buyBestTrail()
+    local trails = (function()
+        local dir = game:GetService("ReplicatedStorage"):FindFirstChild("Directory")
+        local t = dir and dir:FindFirstChild("Trails")
+        if not t or not t:IsA("ModuleScript") then return nil end
+        local ok, mod = pcall(require, t)
+        if ok and type(mod) == "table" and type(mod.Directory) == "table" then return mod end
+        return nil
+    end)()
+    local save = getSaveModule()
+    local network = getNetworkModule()
+    if not trails or not save or not network then return false, "missing" end
+    if not network.NET_MAP or not network.NET_MAP.Trails then return false, "no netmap" end
+    local ok, data = pcall(function() return save.Get() end)
+    if not ok or type(data) ~= "table" then return false, "no save" end
+    local money = tonumber(data.Money) or 0
+    local owned = data.TrailInventory or {}
+    local equipped = data.EquippedTrail
+    local bestOwnedSpeed = 0
+    local bestOwnedId
+    for id, val in pairs(owned) do
+        if val and trails.Directory[id] then
+            local speed = tonumber(trails.Directory[id].SpeedMultiplier) or 1
+            if speed > bestOwnedSpeed then bestOwnedSpeed = speed; bestOwnedId = id end
+        end
+    end
+    local bestBuy
+    local bestBuySpeed = bestOwnedSpeed
+    for id, info in pairs(trails.Directory) do
+        if type(id) == "string" and type(info) == "table" then
+            if info.DisplayInShop and not info.RobuxOnly then
+                if not owned[id] then
+                    local price = tonumber(info.Price) or 0
+                    local speed = tonumber(info.SpeedMultiplier) or 1
+                    if price > 0 and price <= money and speed > bestBuySpeed then
+                        bestBuySpeed = speed
+                        bestBuy = { Id = id, Data = info, Speed = speed }
+                    end
+                end
+            end
+        end
+    end
+    local trailsNet = network.NET_MAP.Trails
+    if bestBuy then
+        pcall(function() network.Invoke(trailsNet.REQUEST_PURCHASE, bestBuy.Id) end)
+        task.wait(0.35)
+        pcall(function() network.Invoke(trailsNet.REQUEST_SELECT, bestBuy.Id) end)
+        return true, "bought " .. bestBuy.Id
+    end
+    if bestOwnedId and equipped ~= bestOwnedId then
+        pcall(function() network.Invoke(trailsNet.REQUEST_SELECT, bestOwnedId) end)
+        return true, "equipped " .. bestOwnedId
+    end
+    return false, "up to date"
+end
+
+local function buyBestBike()
+    local bikeCatalog = (function()
+        local system = game:GetService("ReplicatedStorage"):FindFirstChild("OurBikeSystem")
+        if not system then return nil end
+        local catalog = system:FindFirstChild("Catalog") or system:WaitForChild("Catalog", 5)
+        if not catalog or not catalog:IsA("ModuleScript") then return nil end
+        local ok, mod = pcall(require, catalog)
+        if ok and type(mod) == "table" and #mod > 0 then return mod end
+        return nil
+    end)()
+    local shopRequest = (function()
+        local system = game:GetService("ReplicatedStorage"):FindFirstChild("OurBikeSystem")
+        if not system then return nil end
+        local req = system:FindFirstChild("ShopRequest") or system:WaitForChild("ShopRequest", 5)
+        if req and req:IsA("RemoteFunction") then return req end
+        return nil
+    end)()
+    local save = getSaveModule()
+    if not bikeCatalog or not shopRequest then return false, "missing" end
+    local money = 0
+    if save then
+        local ok, data = pcall(function() return save.Get() end)
+        if ok and type(data) == "table" then money = tonumber(data.Money) or 0 end
+    end
+    local ok, state = pcall(function() return shopRequest:InvokeServer("State") end)
+    if not ok or type(state) ~= "table" then return false, "state failed" end
+    local owned = state.Owned or {}
+    local equipped = state.Equipped or "Bicycle"
+    if type(state.Money) == "number" and state.Money > money then money = state.Money end
+    local cashBikes = {}
+    for _, bike in ipairs(bikeCatalog) do
+        if type(bike) == "table" and type(bike.Id) == "string" then
+            if not bike.AdminOnly and not bike.RobuxOnly then table.insert(cashBikes, bike) end
+        end
+    end
+    if #cashBikes == 0 then return false, "no cash bikes" end
+    table.sort(cashBikes, function(a, b) return (tonumber(a.SpeedMultiplier) or 1) > (tonumber(b.SpeedMultiplier) or 1) end)
+    local bestOwnedSpeed = 1
+    for _, bike in ipairs(cashBikes) do
+        if owned[bike.Id] == true then
+            local speed = tonumber(bike.SpeedMultiplier) or 1
+            if speed > bestOwnedSpeed then bestOwnedSpeed = speed end
+        end
+    end
+    for _, bike in ipairs(cashBikes) do
+        local speed = tonumber(bike.SpeedMultiplier) or 1
+        local price = tonumber(bike.Price) or 0
+        if owned[bike.Id] ~= true and speed > bestOwnedSpeed and price > 0 and price <= money then
+            local ok2, res = pcall(function() return shopRequest:InvokeServer("Buy", bike.Id) end)
+            if ok2 and type(res) == "table" and res.Ok then
+                notify("Bike Shop", "Bought: " .. bike.Id, 3)
+                return true, "bought " .. bike.Id
+            end
+            task.wait(0.2)
+        end
+    end
+    local bestOwnedId
+    local bestSpeed = 1
+    for _, bike in ipairs(cashBikes) do
+        if owned[bike.Id] == true then
+            local speed = tonumber(bike.SpeedMultiplier) or 1
+            if speed > bestSpeed then bestSpeed = speed; bestOwnedId = bike.Id end
+        end
+    end
+    if bestOwnedId and equipped ~= bestOwnedId then
+        if pcall(function() return shopRequest:InvokeServer("Equip", bestOwnedId) end) then
+            return true, "equipped " .. bestOwnedId
+        end
+    end
+    return false, "up to date"
+end
+
+local function upgradeTreadmill()
+    local client = (function()
+        local scripts = LocalPlayer:FindFirstChild("PlayerScripts")
+        local gui = scripts and scripts:FindFirstChild("GUI")
+        local treadmill = gui and gui:FindFirstChild("TreadmillUpgrade")
+        local c = treadmill and treadmill:FindFirstChild("Client")
+        if not c or not c:IsA("ModuleScript") then return nil end
+        local ok, mod = pcall(require, c)
+        if ok and type(mod) == "table" then return mod end
+        return nil
+    end)()
+    local save = getSaveModule()
+    if not client or not save then return false, "missing" end
+    local ok, data = pcall(function() return save.Get() end)
+    if not ok or type(data) ~= "table" then return false, "no save" end
+    local canAfford = false
+    pcall(function() canAfford = client.CanAffordNext(data) end)
+    if not canAfford then return false, "cannot afford or max" end
+    if pcall(function() client.RequestCashUpgrade() end) then return true, "requested" end
+    return false, "request failed"
+end
+
+local function upgradePlot()
+    local client = (function()
+        local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+        local c = lib and lib:FindFirstChild("Client")
+        local upgrade = c and c:FindFirstChild("BaseUpgradeClient")
+        if not upgrade or not upgrade:IsA("ModuleScript") then return nil end
+        local ok, mod = pcall(require, upgrade)
+        if ok and type(mod) == "table" then return mod end
+        return nil
+    end)()
+    local save = getSaveModule()
+    if not client or not save then return false, "missing" end
+    local ok, data = pcall(function() return save.Get() end)
+    if not ok or type(data) ~= "table" then return false, "no save" end
+    local canAfford = false
+    pcall(function() canAfford = client.CanAffordNext(data) end)
+    if not canAfford then return false, "cannot afford or max" end
+    if pcall(function() client.RequestCashUpgrade() end) then return true, "requested" end
+    return false, "request failed"
+end
+
+local function shopStartAutoTrail()
+    if BluzHub.Shop.AutoTrailLoop then return end
+    BluzHub.Shop.AutoTrailRunning = true
+    waitSaveLoaded()
+    BluzHub.Shop.AutoTrailLoop = task.spawn(function()
+        while BluzHub.Shop.AutoTrailRunning do pcall(buyBestTrail); task.wait(3) end
+        BluzHub.Shop.AutoTrailLoop = nil
+        BluzHub.Shop.AutoTrailRunning = false
+    end)
+    addTask(BluzHub.Shop.AutoTrailLoop)
+end
+
+local function shopStopAutoTrail()
+    BluzHub.Shop.AutoTrailRunning = false
+    if BluzHub.Shop.AutoTrailLoop then task.cancel(BluzHub.Shop.AutoTrailLoop); BluzHub.Shop.AutoTrailLoop = nil end
+end
+
+local function shopStartAutoBike()
+    if BluzHub.Shop.AutoBikeLoop then return end
+    BluzHub.Shop.AutoBikeRunning = true
+    BluzHub.Shop.AutoBikeLoop = task.spawn(function()
+        while BluzHub.Shop.AutoBikeRunning do pcall(buyBestBike); task.wait(3) end
+        BluzHub.Shop.AutoBikeLoop = nil
+        BluzHub.Shop.AutoBikeRunning = false
+    end)
+    addTask(BluzHub.Shop.AutoBikeLoop)
+end
+
+local function shopStopAutoBike()
+    BluzHub.Shop.AutoBikeRunning = false
+    if BluzHub.Shop.AutoBikeLoop then task.cancel(BluzHub.Shop.AutoBikeLoop); BluzHub.Shop.AutoBikeLoop = nil end
+end
+
+local function shopStartAutoTreadmill()
+    if BluzHub.Shop.AutoTreadmillLoop then return end
+    BluzHub.Shop.AutoTreadmillRunning = true
+    waitSaveLoaded()
+    BluzHub.Shop.AutoTreadmillLoop = task.spawn(function()
+        while BluzHub.Shop.AutoTreadmillRunning do
+            local ok, res = pcall(upgradeTreadmill)
+            if ok and res == false then task.wait(3) else task.wait(2) end
+        end
+        BluzHub.Shop.AutoTreadmillLoop = nil
+        BluzHub.Shop.AutoTreadmillRunning = false
+    end)
+    addTask(BluzHub.Shop.AutoTreadmillLoop)
+end
+
+local function shopStopAutoTreadmill()
+    BluzHub.Shop.AutoTreadmillRunning = false
+    if BluzHub.Shop.AutoTreadmillLoop then task.cancel(BluzHub.Shop.AutoTreadmillLoop); BluzHub.Shop.AutoTreadmillLoop = nil end
+end
+
+local function shopStartAutoPlot()
+    if BluzHub.Shop.AutoPlotLoop then return end
+    BluzHub.Shop.AutoPlotRunning = true
+    waitSaveLoaded()
+    BluzHub.Shop.AutoPlotLoop = task.spawn(function()
+        while BluzHub.Shop.AutoPlotRunning do
+            local ok, res = pcall(upgradePlot)
+            if ok and res == false then task.wait(3) else task.wait(2) end
+        end
+        BluzHub.Shop.AutoPlotLoop = nil
+        BluzHub.Shop.AutoPlotRunning = false
+    end)
+    addTask(BluzHub.Shop.AutoPlotLoop)
+end
+
+local function shopStopAutoPlot()
+    BluzHub.Shop.AutoPlotRunning = false
+    if BluzHub.Shop.AutoPlotLoop then task.cancel(BluzHub.Shop.AutoPlotLoop); BluzHub.Shop.AutoPlotLoop = nil end
+end
+
+local function getNetworkRemote(name)
+    local network = game:GetService("ReplicatedStorage"):FindFirstChild("Network")
+    if not network then return nil end
+    local obj = network:FindFirstChild(name)
+    if not obj then return nil end
+    if obj:IsA("RemoteFunction") or obj:IsA("RemoteEvent") then return obj end
+    return nil
+end
+
+local function getPolicyModule()
+    local lib = game:GetService("ReplicatedStorage"):FindFirstChild("Library")
+    local c = lib and lib:FindFirstChild("Client")
+    local eggs = c and c:FindFirstChild("Eggs")
+    local policy = eggs and eggs:FindFirstChild("PlacedEggGrowthPresentationPolicy")
+    if not policy or not policy:IsA("ModuleScript") then return nil end
+    local ok, mod = pcall(require, policy)
+    if ok and type(mod) == "table" and type(mod.IsReady) == "function" then return mod end
+    return nil
+end
+
+local function plotGetEggsList()
+    local list = {"All"}
+    for _, v in ipairs(getEggsList()) do table.insert(list, v) end
+    return list
+end
+
+local function plotGetEggsListForPlace()
+    local list = {"Best"}
+    for _, v in ipairs(getEggsList()) do table.insert(list, v) end
+    return list
+end
+
+local function plotParseSelection(selection)
+    local out = {}
+    for _, v in ipairs(selection or {}) do
+        if type(v) == "string" then
+            if v == "All" or v == "Best" then table.insert(out, v)
+            else
+                local clean = v:match("^%[[^%]]+%]%s*(.+)$")
+                if clean and clean ~= "" then table.insert(out, clean) end
+            end
+        end
+    end
+    return out
+end
+
+local function plotMatchesSelection(category, selection)
+    local parsed = plotParseSelection(selection)
+    if #parsed == 0 then return false end
+    for _, v in ipairs(parsed) do
+        if v == "All" or v == "Best" then return true end
+        if v == category then return true end
+    end
+    return false
+end
+
+local function plotCountPlacedEggs()
+    local cmds = getEggCmds()
+    if not cmds then return 0 end
+    local ok, records = pcall(function() return cmds.GetOwnerRuntimeRecords(LocalPlayer.UserId) end)
+    if not ok or type(records) ~= "table" then return 0 end
+    local count = 0
+    for _, rec in pairs(records) do if rec.Placement then count = count + 1 end end
+    return count
+end
+
+local function plotGetFreePlacement(plotData)
+    if not plotData or not plotData.PetArea or not plotData.CenterPoint then return nil end
+    local petArea = plotData.PetArea
+    if not petArea:IsA("BasePart") then return nil end
+    local cmds = getEggCmds()
+    if not cmds then return nil end
+    local ok, records = pcall(function() return cmds.GetOwnerRuntimeRecords(LocalPlayer.UserId) end)
+    local placed = {}
+    if ok and type(records) == "table" then
+        for _, rec in pairs(records) do
+            if rec.Placement and rec.Placement.LocalCFrame then
+                local cf = rec.Placement.LocalCFrame
+                if typeof(cf) == "CFrame" then
+                    local pos = (plotData.CenterPoint.CFrame * cf).Position
+                    table.insert(placed, Vector3.new(pos.X, 0, pos.Z))
+                end
+            end
+        end
+    end
+    local size = petArea.Size
+    local cf = petArea.CFrame
+    local cols = math.max(math.floor((size.X - 4) / 4), 1)
+    local rows = math.max(math.floor((size.Z - 4) / 4), 1)
+    for row = 0, rows - 1 do
+        for col = 0, cols - 1 do
+            local pos = (cf * CFrame.new(-((cols - 1) * 4) / 2 + col * 4, size.Y / 2, -((rows - 1) * 4) / 2 + row * 4)).Position
+            local occupied = false
+            for _, p in ipairs(placed) do
+                local dx = pos.X - p.X
+                local dz = pos.Z - p.Z
+                if math.sqrt(dx * dx + dz * dz) < 3.4 then occupied = true; break end
+            end
+            if not occupied then return plotData.CenterPoint.CFrame:ToObjectSpace(CFrame.new(pos)) end
+        end
+    end
+    return nil
+end
+
+local function plotPlaceEggTool(tool, plotData)
+    if not tool or not tool.Parent then return false, "no tool" end
+    if not plotData then return false, "no plot" end
+    local uid = tool:GetAttribute("UID")
+    if type(uid) ~= "string" or uid == "" then return false, "bad uid" end
+    local placeRemote = getNetworkRemote("Eggs: RequestPlaceEgg")
+    local equipRemote = getNetworkRemote("Eggs: RequestEquipTool")
+    if not placeRemote then return false, "no place remote" end
+    if not equipRemote then return false, "no equip remote" end
+    local localCf = plotGetFreePlacement(plotData)
+    if not localCf then return false, "no space" end
+    local char = LocalPlayer.Character
+    if not char then return false, "no character" end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid or humanoid.Health <= 0 then return false, "no humanoid" end
+    pcall(function() humanoid:UnequipTools() end)
+    task.wait(0.1)
+    local ok, result = pcall(function() return equipRemote:InvokeServer(uid) end)
+    if not ok then return false, "equip invoke error" end
+    if result ~= true then return false, "equip rejected: " .. tostring(result) end
+    local foundTool
+    local timeout = tick() + 2.5
+    while tick() < timeout do
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") and child:GetAttribute("ItemType") == "AssetEgg" and child:GetAttribute("UID") == uid then foundTool = child; break end
+        end
+        if foundTool then break end
+        task.wait(0.05)
+    end
+    if not foundTool then return false, "tool did not appear" end
+    task.wait(0.2)
+    local ok2, result2 = pcall(function() return placeRemote:InvokeServer({ Uid = uid, LocalCFrame = localCf }) end)
+    task.wait(0.15)
+    if foundTool.Parent == char then pcall(function() humanoid:UnequipTools() end) end
+    if not ok2 then return false, "place invoke error" end
+    if result2 ~= true then return false, "place rejected: " .. tostring(result2) end
+    return true, "placed"
+end
+
+local function plotEquipBestPets()
+    local remote = getNetworkRemote("Backpack: EquipBest")
+    if not remote then return false, "no EquipBest remote" end
+    local ok, result = pcall(function() return remote:InvokeServer() end)
+    if not ok then return false, "invoke error" end
+    if result ~= true then return false, "server rejected: " .. tostring(result) end
+    return true, "equipped"
+end
+
+local function plotStartAutoPlaceBestPets()
+    if BluzHub.Plot.AutoPlaceBestPetsLoop then return end
+    BluzHub.Plot.AutoPlaceBestPetsRunning = true
+    BluzHub.Plot.AutoPlaceBestPetsLoop = task.spawn(function()
+        task.wait(2)
+        while BluzHub.Plot.AutoPlaceBestPetsRunning do pcall(plotEquipBestPets); task.wait(30) end
+        BluzHub.Plot.AutoPlaceBestPetsLoop = nil
+        BluzHub.Plot.AutoPlaceBestPetsRunning = false
+    end)
+    addTask(BluzHub.Plot.AutoPlaceBestPetsLoop)
+end
+
+local function plotStopAutoPlaceBestPets()
+    BluzHub.Plot.AutoPlaceBestPetsRunning = false
+    if BluzHub.Plot.AutoPlaceBestPetsLoop then task.cancel(BluzHub.Plot.AutoPlaceBestPetsLoop); BluzHub.Plot.AutoPlaceBestPetsLoop = nil end
+end
+
+local function plotHatchOne(uid)
+    if not uid then return false, "no uid" end
+    local hatchRemote = getNetworkRemote("Eggs: RequestHatchEgg")
+    local completeRemote = getNetworkRemote("Eggs: RequestCompleteHatchEgg")
+    if not hatchRemote then return false, "no hatch remote" end
+    local ok, result = pcall(function() return hatchRemote:InvokeServer(uid) end)
+    if not ok or not result then return false, "hatch rejected" end
+    task.wait(0.35)
+    if completeRemote then pcall(function() return completeRemote:InvokeServer(uid) end) end
+    return true
+end
+
+local function plotRunHatchOnce()
+    local cmds = getEggCmds()
+    local policy = getPolicyModule()
+    if not cmds or not policy then return false, "missing" end
+    local ok, records = pcall(function() return cmds.GetOwnerRuntimeRecords(LocalPlayer.UserId) end)
+    if not ok or type(records) ~= "table" then return false, "no records" end
+    local ready = {}
+    for uid, rec in pairs(records) do
+        if rec.Placement and plotMatchesSelection(rec.AssetCategory, BluzHub.Plot.HatchSelectedEggs) then
+            local isReady = false
+            pcall(function() isReady = policy.IsReady(rec) end)
+            if isReady then table.insert(ready, uid) end
+        end
+    end
+    if #ready == 0 then return false, "no ready" end
+    for _, uid in ipairs(ready) do if plotHatchOne(uid) then return true, "hatched" end end
+    return false, "hatch failed"
+end
+
+local function plotRunPlaceOnce()
+    local plotCmds = getPlotCmds()
+    if not plotCmds then return false, "no plotCmds" end
+    local ok, plotData = pcall(function() return plotCmds.GetPlotData() end)
+    if not ok or type(plotData) ~= "table" then return false, "no plot" end
+    local placedCount = plotCountPlacedEggs()
+    if placedCount >= 10 then return false, "plot full" end
+    local deps = sellLoadDeps()
+    if not deps.Save or not deps.EggItemUtil then return false, "no save deps" end
+    local ok2, save = pcall(function() return deps.Save.Get() end)
+    if not ok2 or type(save) ~= "table" then return false, "no save" end
+    local inventory = save.EggInventory or {}
+    local assets = getAssets()
+    local allowAll = false
+    local categorySet = {}
+    for _, v in ipairs(plotParseSelection(BluzHub.Plot.PlaceSelectedEggs)) do
+        if v == "Best" or v == "All" then allowAll = true else categorySet[v] = true end
+    end
+    local candidates = {}
+    for uid, item in pairs(inventory) do
+        if type(item) == "table" and item.Placement == nil then
+            local ok3, egg = pcall(function() return deps.EggItemUtil.DeserializeSavedEgg(item) end)
+            if ok3 and type(egg) == "table" then
+                local category = egg.AssetCategory
+                if category and (allowAll or categorySet[category]) then
+                    local rarityNum, luck = 0, 0
+                    if assets and assets.Directory[category] then
+                        local r = assets.Directory[category].Rarity
+                        if type(r) == "table" then rarityNum = tonumber(r.RarityNumber) or 0 end
+                        luck = tonumber(assets.Directory[category].Luck) or 0
+                    end
+                    table.insert(candidates, { uid = uid, cat = category, score = rarityNum, luck = luck })
+                end
+            end
+        end
+    end
+    if #candidates == 0 then return false, "no matching unplaced eggs" end
+    table.sort(candidates, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        if a.luck ~= b.luck then return a.luck > b.luck end
+        return a.cat < b.cat
+    end)
+    local best = candidates[1]
+    local localCf = plotGetFreePlacement(plotData)
+    if not localCf then return false, "no free spot" end
+    local equipRemote = getNetworkRemote("Eggs: RequestEquipTool")
+    local placeRemote = getNetworkRemote("Eggs: RequestPlaceEgg")
+    if not equipRemote or not placeRemote then return false, "no remotes" end
+    local char = LocalPlayer.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false, "no humanoid" end
+    pcall(function() humanoid:UnequipTools() end)
+    task.wait(0.15)
+    local ok4, result = pcall(function() return equipRemote:InvokeServer(best.uid) end)
+    if not ok4 then return false, "equip error" end
+    if not result then return false, "equip rejected" end
+    local found = false
+    local timeout = tick() + 4
+    while tick() < timeout do
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") and child:GetAttribute("ItemType") == "AssetEgg" and child:GetAttribute("UID") == best.uid then found = true; break end
+        end
+        if found then break end
+        task.wait(0.05)
+    end
+    if not found then pcall(function() humanoid:UnequipTools() end); return false, "tool not in character" end
+    task.wait(0.2)
+    local ok5, result2 = pcall(function() return placeRemote:InvokeServer({ Uid = best.uid, LocalCFrame = localCf }) end)
+    task.wait(0.15)
+    pcall(function() humanoid:UnequipTools() end)
+    if not ok5 then return false, "place error" end
+    if not result2 then return false, "place rejected" end
+    return true, "placed " .. best.cat
+end
+
+local function plotGetTreadmillPart()
+    local plotCmds = getPlotCmds()
+    if not plotCmds then return nil end
+    local ok, plotData = pcall(function() return plotCmds.GetPlotData() end)
+    if not ok or type(plotData) ~= "table" or not plotData.PlotFolder then return nil end
+    local part = plotData.PlotFolder:FindFirstChild("TreadmillBottom")
+    if part and part:IsA("BasePart") then return part end
+    local part2 = plotData.PlotFolder:FindFirstChild("TreadmillBottom", true)
+    if part2 and part2:IsA("BasePart") then return part2 end
+    return nil
+end
+
+local function plotEquipTreadmill()
+    local part = plotGetTreadmillPart()
+    if not part then return false, "no TreadmillBottom" end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "no character" end
+    local target = part.Position + Vector3.new(0, part.Size.Y / 2 + 3, 0)
+    local look = hrp.CFrame.LookVector
+    pcall(function()
+        hrp.CFrame = CFrame.new(target, target + look)
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+    task.wait(0.3)
+    local network = getNetworkModule()
+    if network and network.NET_MAP and network.NET_MAP.Treadmills then
+        pcall(function() network.Invoke(network.NET_MAP.Treadmills.REQUEST_EQUIP_STATIC) end)
+    end
+    return true
+end
+
+local function plotExitTreadmill()
+    local network = getNetworkModule()
+    if network and network.NET_MAP and network.NET_MAP.Treadmills then
+        pcall(function() network.Invoke(network.NET_MAP.Treadmills.REQUEST_UNEQUIP) end)
+    end
+    task.wait(0.2)
+    local plotCmds = getPlotCmds()
+    if plotCmds then
+        local ok, data = pcall(function() return plotCmds.GetPlotData() end)
+        if ok and type(data) == "table" then
+            local area = data.PetArea or data.CenterPoint
+            if area and area.Position then
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local target = area.Position + Vector3.new(0, 5, 0)
+                    local look = hrp.CFrame.LookVector
+                    pcall(function()
+                        hrp.CFrame = CFrame.new(target, target + look)
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.AssemblyAngularVelocity = Vector3.zero
+                    end)
+                end
+            end
+        end
+    end
+    return true
+end
+
+local function plotClaimIndexRewards()
+    local network = getNetworkModule()
+    if not network or not network.NET_MAP or not network.NET_MAP.Index then return false end
+    local index = network.NET_MAP.Index
+    if not index.REQUEST_CLAIM_ALL then return false end
+    local ok, result = pcall(function() return network.Invoke(index.REQUEST_CLAIM_ALL) end)
+    return ok and result
+end
+
+local function plotStartAutoHatch()
+    if BluzHub.Plot.AutoHatchLoop then return end
+    BluzHub.Plot.AutoHatchRunning = true
+    BluzHub.Plot.AutoHatchLoop = task.spawn(function()
+        while BluzHub.Plot.AutoHatchRunning do
+            local ok, res = pcall(plotRunHatchOnce)
+            if ok and res then task.wait(0.6) else task.wait(0.4) end
+        end
+        BluzHub.Plot.AutoHatchLoop = nil
+    end)
+    addTask(BluzHub.Plot.AutoHatchLoop)
+end
+
+local function plotStopAutoHatch()
+    BluzHub.Plot.AutoHatchRunning = false
+    if BluzHub.Plot.AutoHatchLoop then task.cancel(BluzHub.Plot.AutoHatchLoop); BluzHub.Plot.AutoHatchLoop = nil end
+end
+
+local function plotStartAutoPlace()
+    if BluzHub.Plot.AutoPlaceLoop then return end
+    BluzHub.Plot.AutoPlaceRunning = true
+    BluzHub.Plot.AutoPlaceLoop = task.spawn(function()
+        while BluzHub.Plot.AutoPlaceRunning do
+            local ok, res = pcall(plotRunPlaceOnce)
+            if ok and res then task.wait(1.2) else task.wait(1) end
+        end
+        BluzHub.Plot.AutoPlaceLoop = nil
+    end)
+    addTask(BluzHub.Plot.AutoPlaceLoop)
+end
+
+local function plotStopAutoPlace()
+    BluzHub.Plot.AutoPlaceRunning = false
+    if BluzHub.Plot.AutoPlaceLoop then task.cancel(BluzHub.Plot.AutoPlaceLoop); BluzHub.Plot.AutoPlaceLoop = nil end
+end
+
+local function plotStartAutoTreadmill()
+    if BluzHub.Plot.AutoTreadmillLoop then return end
+    BluzHub.Plot.AutoTreadmillRunning = true
+    BluzHub.Plot.AutoTreadmillLoop = task.spawn(function()
+        while BluzHub.Plot.AutoTreadmillRunning do pcall(plotEquipTreadmill); task.wait(2) end
+        pcall(plotExitTreadmill)
+        BluzHub.Plot.AutoTreadmillLoop = nil
+    end)
+    addTask(BluzHub.Plot.AutoTreadmillLoop)
+end
+
+local function plotStopAutoTreadmill()
+    BluzHub.Plot.AutoTreadmillRunning = false
+    if BluzHub.Plot.AutoTreadmillLoop then task.cancel(BluzHub.Plot.AutoTreadmillLoop); BluzHub.Plot.AutoTreadmillLoop = nil end
+    pcall(plotExitTreadmill)
+end
+
+local function plotStartAutoClaim()
+    if BluzHub.Plot.AutoClaimLoop then return end
+    BluzHub.Plot.AutoClaimRunning = true
+    BluzHub.Plot.AutoClaimLoop = task.spawn(function()
+        while BluzHub.Plot.AutoClaimRunning do pcall(plotClaimIndexRewards); task.wait(3) end
+        BluzHub.Plot.AutoClaimLoop = nil
+    end)
+    addTask(BluzHub.Plot.AutoClaimLoop)
+end
+
+local function plotStopAutoClaim()
+    BluzHub.Plot.AutoClaimRunning = false
+    if BluzHub.Plot.AutoClaimLoop then task.cancel(BluzHub.Plot.AutoClaimLoop); BluzHub.Plot.AutoClaimLoop = nil end
+end
+
+local farmTab = Tabs.Farm:AddLeftGroupbox("Auto Farm")
+farmTab:AddToggle("FarmEnabled", { Text = "Enable Auto Farm", Default = false, Callback = function(v) if v then startAutoFarm() else stopAutoFarm() end end })
+farmTab:AddDropdown("FarmSpecificEggs", { Text = "Specific Eggs", Values = getEggsList(), Multi = true, Default = {}, Callback = function(selected) BluzHub.Farm.SpecificEggNames = {}; for name, enabled in pairs(selected) do if enabled then local clean = name:match("^%[[^%]]+%]%s*(.+)$"); if clean then table.insert(BluzHub.Farm.SpecificEggNames, clean) end end end end })
+farmTab:AddDropdown("FarmRarities", { Text = "Rarities", Values = getRaritiesList(), Multi = true, Default = {}, Callback = function(selected) BluzHub.Farm.SelectedRarities = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Farm.SelectedRarities, name) end end end })
+farmTab:AddDropdown("FarmAreas", { Text = "Areas", Values = getAreasList(), Multi = true, Default = {}, Callback = function(selected) BluzHub.Farm.SelectedAreas = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Farm.SelectedAreas, name) end end end })
+
+local sellEggsList, _ = getAllEggCategories()
+local sellPetsList, _ = getAllPetCategories()
+local sellTab = Tabs.Sell:AddLeftGroupbox("Auto Sell")
+sellTab:AddDropdown("SellEggs", { Text = "Egg Categories", Values = sellEggsList, Multi = true, Default = {}, Callback = function(selected) BluzHub.Sell.SelectedEggCategories = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Sell.SelectedEggCategories, name) end end end })
+sellTab:AddDropdown("SellPets", { Text = "Pet Categories", Values = sellPetsList, Multi = true, Default = {}, Callback = function(selected) BluzHub.Sell.SelectedPetCategories = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Sell.SelectedPetCategories, name) end end end })
+sellTab:AddButton({ Text = "Sell All Eggs", Func = function() local n = sellAllEggs(); notify("Sell", "Sold " .. n .. " eggs", 3) end })
+sellTab:AddButton({ Text = "Sell All Pets", Func = function() local n = sellAllPets(); notify("Sell", "Sold " .. n .. " pets", 3) end })
+sellTab:AddButton({ Text = "Sell Selected Eggs", Func = function() local n = sellSelectedEggs(); notify("Sell", "Sold " .. n .. " eggs", 3) end })
+sellTab:AddButton({ Text = "Sell Selected Pets", Func = function() local n = sellSelectedPets(); notify("Sell", "Sold " .. n .. " pets", 3) end })
+sellTab:AddToggle("AutoEggs", { Text = "Auto Sell Eggs", Default = false, Callback = function(v) if v then sellStartAutoEggs() else sellStopAutoEggs() end end })
+sellTab:AddToggle("AutoPets", { Text = "Auto Sell Pets", Default = false, Callback = function(v) if v then sellStartAutoPets() else sellStopAutoPets() end end })
+
+local shopTab = Tabs.Shop:AddLeftGroupbox("Auto Buy")
+shopTab:AddToggle("AutoTrail", { Text = "Auto Buy Best Trail", Default = false, Callback = function(v) if v then shopStartAutoTrail() else shopStopAutoTrail() end end })
+shopTab:AddToggle("AutoBike", { Text = "Auto Buy Best Bike", Default = false, Callback = function(v) if v then shopStartAutoBike() else shopStopAutoBike() end end })
+shopTab:AddToggle("AutoTreadmill", { Text = "Auto Upgrade Treadmill", Default = false, Callback = function(v) if v then shopStartAutoTreadmill() else shopStopAutoTreadmill() end end })
+shopTab:AddToggle("AutoPlot", { Text = "Auto Upgrade Plot", Default = false, Callback = function(v) if v then shopStartAutoPlot() else shopStopAutoPlot() end end })
+
+local plotTab = Tabs.Plot:AddLeftGroupbox("Auto Plot")
+plotTab:AddDropdown("PlotHatchEggs", { Text = "Hatch Eggs", Values = plotGetEggsList(), Multi = true, Default = {"All"}, Callback = function(selected) BluzHub.Plot.HatchSelectedEggs = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Plot.HatchSelectedEggs, name) end end end })
+plotTab:AddDropdown("PlotPlaceEggs", { Text = "Place Eggs", Values = plotGetEggsListForPlace(), Multi = true, Default = {"Best"}, Callback = function(selected) BluzHub.Plot.PlaceSelectedEggs = {}; for name, enabled in pairs(selected) do if enabled then table.insert(BluzHub.Plot.PlaceSelectedEggs, name) end end end })
+plotTab:AddToggle("AutoHatch", { Text = "Auto Hatch", Default = false, Callback = function(v) if v then plotStartAutoHatch() else plotStopAutoHatch() end end })
+plotTab:AddToggle("AutoPlace", { Text = "Auto Place", Default = false, Callback = function(v) if v then plotStartAutoPlace() else plotStopAutoPlace() end end })
+plotTab:AddToggle("AutoTreadmillPlot", { Text = "Auto Treadmill", Default = false, Callback = function(v) if v then plotStartAutoTreadmill() else plotStopAutoTreadmill() end end })
+plotTab:AddToggle("AutoClaim", { Text = "Auto Claim Index", Default = false, Callback = function(v) if v then plotStartAutoClaim() else plotStopAutoClaim() end end })
+plotTab:AddToggle("AutoPlaceBestPets", { Text = "Auto Equip Best Pets", Default = false, Callback = function(v) if v then plotStartAutoPlaceBestPets() else plotStopAutoPlaceBestPets() end end })
+
+local espTab = Tabs.Visuals:AddLeftGroupbox("ESP")
+local espEnabled = false
+local espObjects = {}
+espTab:AddToggle("EspEnabled", { Text = "Enable ESP", Default = false, Callback = function(v) espEnabled = v end })
+espTab:AddToggle("EspNames", { Text = "Names", Default = true, Callback = function(v) espObjects.names = v end })
+espTab:AddToggle("EspDistance", { Text = "Distance", Default = true, Callback = function(v) espObjects.dist = v end })
+
+RunService.RenderStepped:Connect(function()
+    if not espEnabled then
+        for _, obj in pairs(espObjects) do if typeof(obj) == "Instance" then obj:Destroy() end end
+        espObjects = {}
+        return
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local head = plr.Character:FindFirstChild("Head")
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if head and hum and hum.Health > 0 then
+                local pos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local dist = math.floor((workspace.CurrentCamera.CFrame.Position - head.Position).Magnitude)
+                    local key = plr.Name
+                    if not espObjects[key] then
+                        local gui = Instance.new("BillboardGui")
+                        gui.Size = UDim2.new(0, 100, 0, 40)
+                        gui.AlwaysOnTop = true
+                        gui.Parent = game:GetService("CoreGui")
+                        local nameLabel = Instance.new("TextLabel")
+                        nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        nameLabel.BackgroundTransparency = 1
+                        nameLabel.TextColor3 = Color3.new(1, 1, 1)
+                        nameLabel.TextStrokeTransparency = 0
+                        nameLabel.Parent = gui
+                        local distLabel = Instance.new("TextLabel")
+                        distLabel.Size = UDim2.new(1, 0, 0.5, 0)
+                        distLabel.Position = UDim2.new(0, 0, 0.5, 0)
+                        distLabel.BackgroundTransparency = 1
+                        distLabel.TextColor3 = Color3.new(0.8, 0.8, 0.8)
+                        distLabel.TextStrokeTransparency = 0
+                        distLabel.Parent = gui
+                        espObjects[key] = gui
+                        espObjects[key .. "_name"] = nameLabel
+                        espObjects[key .. "_dist"] = distLabel
+                    end
+                    if espObjects[key] then
+                        espObjects[key].Adornee = head
+                        if espObjects[key .. "_name"] then espObjects[key .. "_name"].Text = plr.Name end
+                        if espObjects[key .. "_dist"] then espObjects[key .. "_dist"].Text = dist .. "m" end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+local miscTab = Tabs.Misc:AddLeftGroupbox("Misc")
+miscTab:AddButton({ Text = "Copy Job ID", Func = function() if setclipboard then setclipboard(game.JobId); notify("Server", "Job ID copied", 2) end end })
+miscTab:AddButton({ Text = "Copy Discord Link", Func = function() if setclipboard then setclipboard("https://discord.gg/JBAvpPx4eN"); notify("Discord", "Link copied", 2) end end })
+miscTab:AddButton({ Text = "Unload", Func = function() if BluzHub.Window then BluzHub.Window:Destroy() end end })
+
+local menuTab = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+menuTab:AddToggle("KeybindMenu", { Text = "Keybind Menu", Default = true, Callback = function(v) Library.KeybindFrame.Visible = v end })
+menuTab:AddLabel("Menu Key"):AddKeyPicker("MenuKey", { Default = "RightShift", NoUI = true, Text = "Menu Key" })
+menuTab:AddButton({ Text = "Unload", Func = function() Library:Unload() end })
+
+Library.ToggleKeybind = Options.MenuKey
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKey" })
+ThemeManager:SetFolder("BluzHub")
+SaveManager:SetFolder("BluzHub/main")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+SaveManager:LoadAutoloadConfig()
+Library:AddDraggableLabel("BluzHub")
+Library:OnUnload(function() pcall(function() if BluzHub.Window then BluzHub.Window:Destroy() end end) end)
+
+Library:Init()
+notify("BluzHub", "Loaded successfully | discord.gg/JBAvpPx4eN", 5)
